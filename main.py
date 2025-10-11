@@ -2,6 +2,8 @@ from flask import Flask, request, jsonify, render_template, redirect, url_for, s
 from datetime import datetime, timedelta
 import os
 import json
+from pymongo import MongoClient
+from bson.objectid import ObjectId
 
 app = Flask(__name__)
 app.secret_key = '2321h3l1h3hl3n1'  # Change this in production
@@ -38,12 +40,66 @@ def add_cors_headers(response):
     return response
 # === End CORS CONFIG ===
 
-# Data storage file
+# === MONGODB CONFIG ===
+# MongoDB connection
+MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://localhost:27017/')
+DB_NAME = 'user_auth_db'
+COLLECTION_NAME = 'users'
+
+# Initialize MongoDB client
+try:
+    client = MongoClient(MONGO_URI)
+    db = client[DB_NAME]
+    users_collection = db[COLLECTION_NAME]
+    
+    # Create TTL index on auth_expires field to automatically delete expired documents
+    # MongoDB will automatically delete documents 60 seconds after the auth_expires time
+    users_collection.create_index("auth_expires", expireAfterSeconds=60)
+    mongo_connected = True
+except Exception as e:
+    print(f"Failed to connect to MongoDB: {e}")
+    mongo_connected = False
+# === End MONGODB CONFIG ===
+
+# Data storage file (as backup)
 DATA_FILE = 'users.json'
 
 # Helper functions for data management
+def clean_expired_users(users):
+    """Remove users with expired authentication from the database"""
+    now = datetime.utcnow()
+    expired_users = []
+    
+    for username, user_data in list(users.items()):
+        auth_expires = user_data.get('auth_expires')
+        if auth_expires and auth_expires <= now:
+            expired_users.append(username)
+    
+    for username in expired_users:
+        del users[username]
+    
+    return users
+
 def load_users():
-    """Load users from JSON file"""
+    """Load users from MongoDB first, fallback to JSON file"""
+    users = {}
+    
+    # Try to load from MongoDB first
+    if mongo_connected:
+        try:
+            mongo_users = users_collection.find({})
+            for user_doc in mongo_users:
+                username = user_doc.get('username')
+                if username:
+                    users[username] = {
+                        'auth_expires': user_doc.get('auth_expires'),
+                        'mongo_id': str(user_doc.get('_id'))
+                    }
+            return users
+        except Exception as e:
+            print(f"Error loading from MongoDB: {e}")
+    
+    # Fallback to JSON file
     if not os.path.exists(DATA_FILE):
         return {}
     try:
@@ -53,13 +109,42 @@ def load_users():
             for username, user_data in data.items():
                 if user_data.get('auth_expires'):
                     user_data['auth_expires'] = datetime.fromisoformat(user_data['auth_expires'])
+            
+            # Clean up expired users
+            data = clean_expired_users(data)
+            
+            # Save the cleaned data back to the file
+            save_users(data)
+            
             return data
     except (json.JSONDecodeError, ValueError):
         return {}
 
 def save_users(users):
-    """Save users to JSON file"""
-    # Convert datetime objects to strings for JSON serialization
+    """Save users to MongoDB and JSON file as backup"""
+    # Save to MongoDB
+    if mongo_connected:
+        try:
+            for username, user_data in users.items():
+                # Check if user exists in MongoDB
+                existing_user = users_collection.find_one({'username': username})
+                
+                if existing_user:
+                    # Update existing user
+                    users_collection.update_one(
+                        {'username': username},
+                        {'$set': {'auth_expires': user_data['auth_expires']}}
+                    )
+                else:
+                    # Insert new user
+                    users_collection.insert_one({
+                        'username': username,
+                        'auth_expires': user_data['auth_expires']
+                    })
+        except Exception as e:
+            print(f"Error saving to MongoDB: {e}")
+    
+    # Save to JSON file as backup
     users_to_save = {}
     for username, user_data in users.items():
         users_to_save[username] = user_data.copy()
@@ -71,9 +156,10 @@ def save_users(users):
 
 # User class to maintain similar interface
 class User:
-    def __init__(self, username, auth_expires=None):
+    def __init__(self, username, auth_expires=None, mongo_id=None):
         self.username = username
         self.auth_expires = auth_expires
+        self.mongo_id = mongo_id
     
     def is_active(self):
         if self.auth_expires is None:
@@ -110,7 +196,7 @@ def index():
     active_users = []
     
     for username, user_data in users_data.items():
-        user = User(username, user_data.get('auth_expires'))
+        user = User(username, user_data.get('auth_expires'), user_data.get('mongo_id'))
         if user.is_active():
             active_users.append(user)
     
@@ -188,6 +274,103 @@ def auth_user():
     
     save_users(users_data)
     return jsonify({"success": True, "username": username, "expires": new_expires.isoformat()})
+
+# New routes for dashboard functionality
+@app.route('/add_user', methods=['POST'])
+def add_user():
+    if not session.get('logged_in'):
+        return jsonify({"error": "Not authenticated"}), 401
+    
+    username = request.form.get('username')
+    duration = request.form.get('duration')
+    
+    if not all([username, duration]):
+        return jsonify({"error": "Missing parameters"}), 400
+    
+    try:
+        duration_hours = int(duration)
+        if duration_hours <= 0:
+            return jsonify({"error": "Duration must be a positive integer"}), 400
+    except ValueError:
+        return jsonify({"error": "Duration must be an integer"}), 400
+    
+    if not username.startswith('@'):
+        return jsonify({"error": "Username must start with @"}), 400
+    
+    users_data = load_users()
+    
+    # Set expiration time
+    now = datetime.utcnow()
+    new_expires = now + timedelta(hours=duration_hours)
+    
+    users_data[username] = {
+        'auth_expires': new_expires
+    }
+    
+    save_users(users_data)
+    return redirect(url_for('index'))
+
+@app.route('/edit_user', methods=['POST'])
+def edit_user():
+    if not session.get('logged_in'):
+        return jsonify({"error": "Not authenticated"}), 401
+    
+    username = request.form.get('username')
+    duration = request.form.get('duration')
+    
+    if not all([username, duration]):
+        return jsonify({"error": "Missing parameters"}), 400
+    
+    try:
+        duration_hours = int(duration)
+        if duration_hours <= 0:
+            return jsonify({"error": "Duration must be a positive integer"}), 400
+    except ValueError:
+        return jsonify({"error": "Duration must be an integer"}), 400
+    
+    users_data = load_users()
+    
+    if username not in users_data:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Update expiration time
+    now = datetime.utcnow()
+    new_expires = now + timedelta(hours=duration_hours)
+    
+    users_data[username]['auth_expires'] = new_expires
+    
+    save_users(users_data)
+    return redirect(url_for('index'))
+
+@app.route('/delete_user', methods=['POST'])
+def delete_user():
+    if not session.get('logged_in'):
+        return jsonify({"error": "Not authenticated"}), 401
+    
+    username = request.form.get('username')
+    
+    if not username:
+        return jsonify({"error": "Missing username parameter"}), 400
+    
+    users_data = load_users()
+    
+    if username not in users_data:
+        return jsonify({"error": "User not found"}), 404
+    
+    # Delete from MongoDB if connected
+    if mongo_connected:
+        try:
+            users_collection.delete_one({'username': username})
+        except Exception as e:
+            print(f"Error deleting from MongoDB: {e}")
+    
+    # Delete from local data
+    del users_data[username]
+    
+    # Save updated data
+    save_users(users_data)
+    
+    return redirect(url_for('index'))
 
 # Create templates directory if it doesn't exist
 if not os.path.exists('templates'):
@@ -474,6 +657,103 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
             margin: 5px 0;
             overflow-x: auto;
         }
+        .action-btn {
+            padding: 0.3rem 0.6rem;
+            margin-right: 0.3rem;
+            border: none;
+            border-radius: 4px;
+            cursor: pointer;
+            font-size: 0.8rem;
+            transition: background-color 0.3s;
+        }
+        .edit-btn {
+            background-color: #2196F3;
+            color: white;
+        }
+        .edit-btn:hover {
+            background-color: #0b7dda;
+        }
+        .delete-btn {
+            background-color: #f44336;
+            color: white;
+        }
+        .delete-btn:hover {
+            background-color: #d32f2f;
+        }
+        .add-user-section {
+            background-color: white;
+            border-radius: 8px;
+            box-shadow: 0 2px 10px rgba(0, 0, 0, 0.05);
+            padding: 20px;
+            margin-top: 30px;
+        }
+        .form-group {
+            margin-bottom: 1rem;
+        }
+        .form-group label {
+            display: block;
+            margin-bottom: 0.5rem;
+            color: #555;
+            font-weight: 500;
+        }
+        .form-group input {
+            width: 100%;
+            padding: 0.75rem;
+            border: 1px solid #ddd;
+            border-radius: 4px;
+            font-size: 1rem;
+            transition: border-color 0.3s;
+        }
+        .form-group input:focus {
+            outline: none;
+            border-color: #4a90e2;
+        }
+        .btn {
+            display: inline-block;
+            padding: 0.75rem 1.5rem;
+            background-color: #4a90e2;
+            color: white;
+            border: none;
+            border-radius: 4px;
+            font-size: 1rem;
+            cursor: pointer;
+            transition: background-color 0.3s;
+        }
+        .btn:hover {
+            background-color: #3a7bc8;
+        }
+        .modal {
+            display: none;
+            position: fixed;
+            z-index: 1;
+            left: 0;
+            top: 0;
+            width: 100%;
+            height: 100%;
+            overflow: auto;
+            background-color: rgba(0,0,0,0.4);
+        }
+        .modal-content {
+            background-color: #fefefe;
+            margin: 15% auto;
+            padding: 20px;
+            border: 1px solid #888;
+            width: 80%;
+            max-width: 500px;
+            border-radius: 8px;
+        }
+        .close {
+            color: #aaa;
+            float: right;
+            font-size: 28px;
+            font-weight: bold;
+        }
+        .close:hover,
+        .close:focus {
+            color: black;
+            text-decoration: none;
+            cursor: pointer;
+        }
         @media (max-width: 768px) {
             .header-content {
                 flex-direction: column;
@@ -517,6 +797,23 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
             </div>
         </div>
         
+        <div class="add-user-section">
+            <div class="section-header">
+                <h2>Add New User</h2>
+            </div>
+            <form action="/add_user" method="post">
+                <div class="form-group">
+                    <label for="username">Username (must start with @)</label>
+                    <input type="text" id="username" name="username" placeholder="@username" required>
+                </div>
+                <div class="form-group">
+                    <label for="duration">Duration (hours)</label>
+                    <input type="number" id="duration" name="duration" min="1" required>
+                </div>
+                <button type="submit" class="btn">Add User</button>
+            </form>
+        </div>
+        
         <div class="users-section">
             <div class="section-header">
                 <h2>Active Users</h2>
@@ -530,6 +827,7 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
                         <th>Username</th>
                         <th>Time Left</th>
                         <th>Expires At</th>
+                        <th>Actions</th>
                     </tr>
                 </thead>
                 <tbody>
@@ -545,6 +843,13 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
                             {% endif %}
                         </td>
                         <td>{{ user.auth_expires.strftime('%Y-%m-%d %H:%M:%S') if user.auth_expires else 'N/A' }}</td>
+                        <td>
+                            <button class="action-btn edit-btn" onclick="openEditModal('{{ user.username }}')">Edit</button>
+                            <form action="/delete_user" method="post" style="display: inline;">
+                                <input type="hidden" name="username" value="{{ user.username }}">
+                                <button type="submit" class="action-btn delete-btn" onclick="return confirm('Are you sure you want to delete this user?')">Delete</button>
+                            </form>
+                        </td>
                     </tr>
                     {% endfor %}
                 </tbody>
@@ -568,11 +873,48 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
         </div>
     </div>
     
+    <!-- Edit User Modal -->
+    <div id="editModal" class="modal">
+        <div class="modal-content">
+            <span class="close" onclick="closeEditModal()">&times;</span>
+            <h2>Edit User</h2>
+            <form action="/edit_user" method="post">
+                <div class="form-group">
+                    <label for="edit_username">Username</label>
+                    <input type="text" id="edit_username" name="username" readonly>
+                </div>
+                <div class="form-group">
+                    <label for="edit_duration">New Duration (hours)</label>
+                    <input type="number" id="edit_duration" name="duration" min="1" required>
+                </div>
+                <button type="submit" class="btn">Update User</button>
+            </form>
+        </div>
+    </div>
+    
     <script>
         // Auto-refresh every 5 minutes
         setTimeout(function() {
             location.reload();
         }, 300000);
+        
+        // Modal functions
+        function openEditModal(username) {
+            document.getElementById('edit_username').value = username;
+            document.getElementById('editModal').style.display = 'block';
+        }
+        
+        function closeEditModal() {
+            document.getElementById('editModal').style.display = 'none';
+        }
+        
+        // Close modal when clicking outside of it
+        window.onclick = function(event) {
+            const modal = document.getElementById('editModal');
+            if (event.target == modal) {
+                modal.style.display = 'none';
+            }
+        }
     </script>
 </body>
 </html>""")
