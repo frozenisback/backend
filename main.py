@@ -6,6 +6,38 @@ import json
 app = Flask(__name__)
 app.secret_key = '2321h3l1h3hl3n1'  # Change this in production
 
+# === CORS CONFIG (added) ===
+# Allow only your frontend origin(s) here to satisfy browser CORS checks.
+ALLOWED_ORIGINS = [
+    'https://stake.com',
+    # add other allowed origins if needed, e.g. 'https://yourdomain.com'
+]
+
+@app.before_request
+def handle_options():
+    # Respond to preflight OPTIONS requests early so browsers get CORS headers.
+    if request.method == 'OPTIONS':
+        resp = make_response()
+        origin = request.headers.get('Origin')
+        if origin and origin in ALLOWED_ORIGINS:
+            resp.headers['Access-Control-Allow-Origin'] = origin
+            resp.headers['Access-Control-Allow-Credentials'] = 'true'
+            resp.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+            resp.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+        return resp
+
+@app.after_request
+def add_cors_headers(response):
+    # Add CORS headers to all responses for allowed origins
+    origin = request.headers.get('Origin')
+    if origin and origin in ALLOWED_ORIGINS:
+        response.headers['Access-Control-Allow-Origin'] = origin
+        response.headers['Access-Control-Allow-Credentials'] = 'true'
+        response.headers['Access-Control-Allow-Methods'] = 'GET,POST,OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = 'Content-Type,Authorization'
+    return response
+# === End CORS CONFIG ===
+
 # Data storage file
 DATA_FILE = 'users.json'
 
