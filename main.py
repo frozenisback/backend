@@ -42,7 +42,7 @@ def add_cors_headers(response):
 
 # === MONGODB CONFIG ===
 # MongoDB connection
-MONGO_URI = os.environ.get('MONGO_URI', 'mongodb://localhost:27017/')
+MONGO_URI = os.environ.get('MONGO_URI', 'mongodb+srv://rj5706603:O95nvJYxapyDHfkw@cluster0.fzmckei.mongodb.net/?retryWrites=true&w=majority&appName=Cluster0')
 DB_NAME = 'user_auth_db'
 COLLECTION_NAME = 'users'
 
