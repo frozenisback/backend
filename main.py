@@ -11,7 +11,7 @@ app.secret_key = '2321h3l1h3hl3n1'  # Change this in production
 # === CORS CONFIG (added) ===
 # Allow only your frontend origin(s) here to satisfy browser CORS checks.
 ALLOWED_ORIGINS = [
-    'https://stake.com',
+    'https://stake.ceo',
     # add other allowed origins if needed, e.g. 'https://yourdomain.com'
 ]
 
