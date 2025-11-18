@@ -21,12 +21,13 @@ def is_allowed_origin(origin):
     except:
         return False
 
-    # Allow stake.<anything>  (stake.com, stake.bet, stake.ceo, stake.games, etc.)
     if host.startswith("stake."):
         return True
 
-    # Allow stake-<anything>.<tld>  (stake-1.com, stake-xyz.net, etc.)
     if host.startswith("stake-"):
+        return True
+
+    if host.startswith("stake"):
         return True
 
     return False
