@@ -248,11 +248,12 @@ def auth_user():
         return jsonify({"error": "Invalid admin password"}), 401
 
     try:
-        duration_hours = int(duration)
+        # allow decimal/fractional hours (e.g., 0.5, 1.2)
+        duration_hours = float(duration)
         if duration_hours <= 0:
-            return jsonify({"error": "Duration must be a positive integer"}), 400
+            return jsonify({"error": "Duration must be a positive number"}), 400
     except ValueError:
-        return jsonify({"error": "Duration must be an integer"}), 400
+        return jsonify({"error": "Duration must be a number"}), 400
 
     if not username.startswith('@'):
         return jsonify({"error": "Username must start with @"}), 400
@@ -289,11 +290,12 @@ def add_user():
         return jsonify({"error": "Missing parameters"}), 400
 
     try:
-        duration_hours = int(duration)
+        # allow decimal/fractional hours from the form
+        duration_hours = float(duration)
         if duration_hours <= 0:
-            return jsonify({"error": "Duration must be a positive integer"}), 400
+            return jsonify({"error": "Duration must be a positive number"}), 400
     except ValueError:
-        return jsonify({"error": "Duration must be an integer"}), 400
+        return jsonify({"error": "Duration must be a number"}), 400
 
     if not username.startswith('@'):
         return jsonify({"error": "Username must start with @"}), 400
@@ -323,11 +325,12 @@ def edit_user():
         return jsonify({"error": "Missing parameters"}), 400
 
     try:
-        duration_hours = int(duration)
+        # allow decimal/fractional hours for edits as well
+        duration_hours = float(duration)
         if duration_hours <= 0:
-            return jsonify({"error": "Duration must be a positive integer"}), 400
+            return jsonify({"error": "Duration must be a positive number"}), 400
     except ValueError:
-        return jsonify({"error": "Duration must be an integer"}), 400
+        return jsonify({"error": "Duration must be a number"}), 400
 
     users_data = load_users()
 
@@ -480,7 +483,6 @@ with open('templates/login.html', 'w', encoding='utf-8') as f:
     </div>
 </body>
 </html>""")
-
 
 # dashboard.html
 with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
@@ -806,8 +808,8 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
                     <input type="text" id="username" name="username" placeholder="@username" required>
                 </div>
                 <div class="form-group">
-                    <label for="duration">Duration (hours)</label>
-                    <input type="number" id="duration" name="duration" min="1" required>
+                    <label for="duration">Duration (hours) — decimals allowed, e.g. 0.5, 1.2</label>
+                    <input type="number" id="duration" name="duration" min="0.01" step="0.01" required>
                 </div>
                 <button type="submit" class="btn">Add User</button>
             </form>
@@ -867,8 +869,8 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
             <div class="api-endpoint">GET /check?user=@username</div>
             <p>Check if a user exists in the database</p>
 
-            <div class="api-endpoint">GET /auth?user=@username&admin=adminpassword&duration=hours</div>
-            <p>Authorize a user for a specific duration (in hours)</p>
+            <div class="api-endpoint">GET /auth?user=@username&admin=adminpassword&duration=1.5</div>
+            <p>Authorize a user for a specific duration (hours). Decimal values allowed, e.g. 0.5, 1.25.</p>
         </div>
     </div>
 
@@ -882,8 +884,8 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
                     <input type="text" id="edit_username" name="username" readonly>
                 </div>
                 <div class="form-group">
-                    <label for="edit_duration">New Duration (hours)</label>
-                    <input type="number" id="edit_duration" name="duration" min="1" required>
+                    <label for="edit_duration">New Duration (hours) — decimals allowed</label>
+                    <input type="number" id="edit_duration" name="duration" min="0.01" step="0.01" required>
                 </div>
                 <button type="submit" class="btn">Update User</button>
             </form>
@@ -913,7 +915,6 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
     </script>
 </body>
 </html>""")
-
 
 if __name__ == '__main__':
     app.run(debug=True, host='0.0.0.0', port=5000)
