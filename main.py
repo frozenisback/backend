@@ -374,6 +374,94 @@ def delete_user():
     return redirect(url_for('index'))
 
 
+# === New endpoint: list all active subscribed users (JSON) ===
+@app.route('/active_users', methods=['GET'])
+def list_active_users():
+    """
+    Returns JSON with all currently active (not expired) users.
+    Example response:
+    {
+        "active_users": [
+            {"username": "@user1", "expires": "2025-12-18T12:34:56", "time_left": "2h 10m"},
+            ...
+        ]
+    }
+    """
+    users_data = load_users()
+    now = datetime.utcnow()
+    active = []
+
+    for username, user_data in users_data.items():
+        auth_expires = user_data.get('auth_expires')
+        if auth_expires and auth_expires > now:
+            # ensure auth_expires is a datetime object
+            expires_iso = auth_expires.isoformat() if hasattr(auth_expires, 'isoformat') else str(auth_expires)
+            user_obj = User(username, auth_expires, user_data.get('mongo_id'))
+            active.append({
+                'username': username,
+                'expires': expires_iso,
+                'time_left': user_obj.time_left()
+            })
+
+    return jsonify({"active_users": active})
+
+
+# === New endpoint: rename / edit usernames ===
+@app.route('/rename_user', methods=['POST'])
+def rename_user():
+    """
+    Rename an existing user to a new username.
+    Expects form fields:
+      - old_username (must start with @)
+      - new_username (must start with @)
+    Must be authenticated (session logged_in) similar to other admin actions.
+    On success redirects to the dashboard (same behavior as other form actions).
+    """
+    if not session.get('logged_in'):
+        return jsonify({"error": "Not authenticated"}), 401
+
+    old_username = request.form.get('old_username')
+    new_username = request.form.get('new_username')
+
+    if not all([old_username, new_username]):
+        return jsonify({"error": "Missing parameters"}), 400
+
+    if not old_username.startswith('@') or not new_username.startswith('@'):
+        return jsonify({"error": "Usernames must start with @"}), 400
+
+    users_data = load_users()
+
+    if old_username not in users_data:
+        return jsonify({"error": "Old username not found"}), 404
+
+    if new_username in users_data:
+        return jsonify({"error": "New username already exists"}), 400
+
+    # Move data in the in-memory/file storage
+    users_data[new_username] = users_data.pop(old_username)
+
+    # Update MongoDB if connected
+    if mongo_connected:
+        try:
+            # Try to update the existing document's username
+            res = users_collection.update_one({'username': old_username}, {'$set': {'username': new_username}})
+            # If no document was updated (res.matched_count == 0), insert new doc and remove old (best-effort)
+            if res.matched_count == 0:
+                try:
+                    # insert new doc with same auth_expires
+                    users_collection.insert_one({
+                        'username': new_username,
+                        'auth_expires': users_data[new_username].get('auth_expires')
+                    })
+                except Exception as ie:
+                    print(f"Error inserting new username in MongoDB: {ie}")
+        except Exception as e:
+            print(f"Error renaming in MongoDB: {e}")
+
+    save_users(users_data)
+    return redirect(url_for('index'))
+
+
 if not os.path.exists('templates'):
     os.makedirs('templates')
 
@@ -871,6 +959,10 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
 
             <div class="api-endpoint">GET /auth?user=@username&admin=adminpassword&duration=1.5</div>
             <p>Authorize a user for a specific duration (hours). Decimal values allowed, e.g. 0.5, 1.25.</p>
+            <div class="api-endpoint">GET /active_users</div>
+            <p>List all currently active subscribed users (JSON).</p>
+            <div class="api-endpoint">POST /rename_user (form: old_username, new_username)</div>
+            <p>Rename an existing username (admin only, via dashboard form or POST).</p>
         </div>
     </div>
 
@@ -889,6 +981,21 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
                 </div>
                 <button type="submit" class="btn">Update User</button>
             </form>
+
+            <hr style="margin: 16px 0;">
+
+            <h3>Rename User</h3>
+            <form action="/rename_user" method="post">
+                <div class="form-group">
+                    <label for="old_username">Current Username</label>
+                    <input type="text" id="old_username" name="old_username" readonly>
+                </div>
+                <div class="form-group">
+                    <label for="new_username">New Username (must start with @)</label>
+                    <input type="text" id="new_username" name="new_username" placeholder="@newname" required>
+                </div>
+                <button type="submit" class="btn">Rename User</button>
+            </form>
         </div>
     </div>
 
@@ -899,6 +1006,7 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
 
         function openEditModal(username) {
             document.getElementById('edit_username').value = username;
+            document.getElementById('old_username').value = username;
             document.getElementById('editModal').style.display = 'block';
         }
 
