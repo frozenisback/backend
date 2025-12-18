@@ -414,11 +414,20 @@ def rename_user():
     Expects form fields:
       - old_username (must start with @)
       - new_username (must start with @)
-    Must be authenticated (session logged_in) similar to other admin actions.
-    On success redirects to the dashboard (same behavior as other form actions).
+      - admin (optional) -> admin password to allow API-style call
+    Allows either:
+      - authenticated admin session (dashboard)
+      - OR admin password passed directly (form data or query string)
+    On dashboard calls (session present) the behavior is unchanged (redirect to index).
+    On API/password calls a JSON success response is returned.
     """
+    # accept admin password from form data or query params
+    admin_password = request.form.get('admin') or request.args.get('admin')
+
+    # allow either session OR direct admin password
     if not session.get('logged_in'):
-        return jsonify({"error": "Not authenticated"}), 401
+        if not admin_password or not check_admin_password(admin_password):
+            return jsonify({"error": "Not authenticated"}), 401
 
     old_username = request.form.get('old_username')
     new_username = request.form.get('new_username')
@@ -459,6 +468,16 @@ def rename_user():
             print(f"Error renaming in MongoDB: {e}")
 
     save_users(users_data)
+
+    # If admin password was used (API call), return JSON success
+    if admin_password:
+        return jsonify({
+            "success": True,
+            "old_username": old_username,
+            "new_username": new_username
+        })
+
+    # Dashboard behavior unchanged
     return redirect(url_for('index'))
 
 
@@ -961,8 +980,8 @@ with open('templates/dashboard.html', 'w', encoding='utf-8') as f:
             <p>Authorize a user for a specific duration (hours). Decimal values allowed, e.g. 0.5, 1.25.</p>
             <div class="api-endpoint">GET /active_users</div>
             <p>List all currently active subscribed users (JSON).</p>
-            <div class="api-endpoint">POST /rename_user (form: old_username, new_username)</div>
-            <p>Rename an existing username (admin only, via dashboard form or POST).</p>
+            <div class="api-endpoint">POST /rename_user (form: old_username, new_username, admin=adminpassword)</div>
+            <p>Rename an existing username (admin only, via dashboard form or POST with admin password).</p>
         </div>
     </div>
 
